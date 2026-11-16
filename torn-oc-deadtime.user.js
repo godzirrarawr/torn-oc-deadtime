@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.5.0
+// @version      2.6.0
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -51,6 +51,13 @@
  *
  * If the faction dashboard has suggestions for you, its slots are ranked the
  * same way (its own priority breaks ties); otherwise the local data is used.
+ *
+ * TornPDA
+ * ----------------------------------------------------------------------------
+ * Works in TornPDA's userscript manager too. Set the script's injection time
+ * to "Start" so it sees the crime list load; if it was injected late, the bar
+ * says so: switch to another Crimes sub-tab and back. The dashboard request
+ * uses PDA_httpGet when GM_xmlhttpRequest isn't available.
  */
 
 (function () {
@@ -178,25 +185,45 @@
 
   // ---- faction dashboard recommendation -----------------------------------
   const dash = { at: 0, busy: false, rows: null, err: '' };
+  // Tampermonkey/Violentmonkey: GM_xmlhttpRequest. TornPDA: PDA_httpGet (goes
+  // through the app, so the http dashboard isn't blocked as mixed content).
+  const hasGM = typeof GM_xmlhttpRequest === 'function';
+  const hasPDA = typeof PDA_httpGet === 'function';
+  function httpGet(url) {
+    if (hasGM) {
+      return new Promise((resolve, reject) => GM_xmlhttpRequest({
+        method: 'GET', url, timeout: 30000,
+        onload: (r) => resolve(r.responseText),
+        onerror: () => reject(new Error('dashboard unreachable')),
+        ontimeout: () => reject(new Error('dashboard timed out')),
+      }));
+    }
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dashboard timed out')), 30000); });
+    return Promise.race([Promise.resolve(PDA_httpGet(url, {})), timeout]).then((r) => {
+      clearTimeout(timer);
+      if (r == null) throw new Error('dashboard unreachable');
+      if (typeof r === 'string') return r;
+      if (r.status && (r.status < 200 || r.status >= 300)) throw new Error('dashboard unreachable');
+      return r.responseText ?? r.body ?? '';
+    }, (e) => {
+      clearTimeout(timer);
+      throw /timed out/.test(e && e.message) ? e : new Error('dashboard unreachable');
+    });
+  }
   function refreshDashboard(force) {
-    if (!DASHBOARD_URL || dash.busy || typeof GM_xmlhttpRequest !== 'function') return;
+    if (!DASHBOARD_URL || dash.busy || !(hasGM || hasPDA)) return;
     if (!force && Date.now() - dash.at < DASHBOARD_EVERY_MS) return;
     dash.busy = true;
-    GM_xmlhttpRequest({
-      method: 'GET', url: DASHBOARD_URL, timeout: 30000,
-      onload: (r) => {
-        dash.busy = false; dash.at = Date.now();
-        try {
-          const d = JSON.parse(r.responseText);
-          if (d.error) throw new Error(d.error);
-          dash.rows = d.available_now_rows || [];
-          dash.err = '';
-        } catch (e) { dash.err = 'dashboard: bad response'; }
-        scheduleRender(50);
-      },
-      onerror: () => { dash.busy = false; dash.at = Date.now(); dash.err = 'dashboard unreachable'; scheduleRender(50); },
-      ontimeout: () => { dash.busy = false; dash.at = Date.now(); dash.err = 'dashboard timed out'; scheduleRender(50); },
-    });
+    httpGet(DASHBOARD_URL).then((text) => {
+      try {
+        const d = JSON.parse(text);
+        if (d.error) throw new Error(d.error);
+        dash.rows = d.available_now_rows || [];
+        dash.err = '';
+      } catch (e) { dash.err = 'dashboard: bad response'; }
+    }, (e) => { dash.err = (e && e.message) || 'dashboard unreachable'; })
+      .then(() => { dash.busy = false; dash.at = Date.now(); scheduleRender(50); });
   }
 
   // Same rules as the dashboard's "Available Now": free now, not the first
@@ -327,6 +354,19 @@
     .ocdt-slot-best{outline:2px solid #ff5252 !important;outline-offset:1px;
       box-shadow:0 0 10px 3px rgba(255,82,82,.85) !important;animation:ocdt-pulse 1.2s ease-in-out infinite}
     @keyframes ocdt-pulse{50%{box-shadow:0 0 3px 1px rgba(255,82,82,.35)}}
+    #ocdt-hint{position:fixed;left:8px;right:8px;bottom:12px;z-index:100000;display:flex;align-items:center;gap:10px;
+      max-width:520px;margin:0 auto;padding:9px 11px;background:#2a1212;color:#fde;border:1px solid #e53935;
+      border-left:4px solid #e53935;border-radius:5px;font:13px/1.4 Arial,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.6)}
+    #ocdt-hint b{color:#fff}
+    #ocdt-hint button{margin-left:auto;padding:4px 9px;border:1px solid #777;border-radius:3px;background:#3a3a3a;color:#eee;cursor:pointer}
+    @media (max-width:600px){
+      #ocdt-bar{padding:8px !important}
+      #ocdt-bar .ocdt-ctrl{margin-left:0;white-space:normal;flex-wrap:wrap}
+      #ocdt-bar select{padding:3px 4px;font-size:14px}
+      #ocdt-bar input[type=checkbox]{width:18px;height:18px}
+      #ocdt-guard{max-width:calc(100vw - 16px);box-sizing:border-box}
+      #ocdt-guard button{padding:8px 6px;font-size:13px}
+    }
   `;
   function ensureStyle() {
     if (document.getElementById('ocdt-style')) return;
@@ -338,7 +378,7 @@
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const ownText = (el) => norm([...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' '));
   const textIs = (el, t) => (el.children.length === 0 ? norm(el.textContent) : ownText(el)) === t;
-  const OURS = '#ocdt-bar, .ocdt-cbadge, .ocdt-min, #ocdt-guard';
+  const OURS = '#ocdt-bar, .ocdt-cbadge, .ocdt-min, #ocdt-guard, #ocdt-hint';
 
   // A card is found from its title, then confirmed by climbing to the smallest
   // block holding every slot label and member name, so two crews running the
@@ -489,9 +529,27 @@
     renderBar(myCrime, pick, rows, cards, source, hiddenCount);
   }
 
+  // Injected after Torn already loaded the list (e.g. TornPDA set to "End"):
+  // there is nothing to match cards against, so say how to reload it.
+  let hintDismissed = false;
+  const startedAt = Date.now();
+  function renderHint(show) {
+    let h = document.getElementById('ocdt-hint');
+    if (!show || hintDismissed) { if (h) h.remove(); return; }
+    if (h) return;
+    h = document.createElement('div');
+    h.id = 'ocdt-hint';
+    h.innerHTML = `<span><b>OC Deadtime:</b> no crime data yet. Switch to another Crimes tab and back to load it.</span>
+      <button type="button" aria-label="Dismiss">✕</button>`;
+    h.querySelector('button').addEventListener('click', () => { hintDismissed = true; h.remove(); });
+    document.body.appendChild(h);
+  }
+
   // slim inline bar above the crime list (not a popup)
   function renderBar(myCrime, pick, rows, cards, source, hiddenCount) {
     const firstCard = cards.size ? [...cards.values()][0].card : null;
+    renderHint(!crimes.size && Date.now() - startedAt > 3000 &&
+      [...document.querySelectorAll('button')].some((b) => /^\s*join\s*$/i.test(b.textContent || '')));
     let bar = document.getElementById('ocdt-bar');
     if (!firstCard && !bar) return;
     if (!bar) {
@@ -628,6 +686,7 @@
     window.addEventListener('hashchange', () => scheduleRender(100));
     setInterval(() => { if (!document.hidden) render(); }, TICK_MS);
     render();
+    setTimeout(render, 3500); // late-injection check (see renderHint)
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

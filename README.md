@@ -7,6 +7,8 @@ No API key needed. The script only reads the crime list Torn's own page loads, a
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) (or Violentmonkey).
-2. Open [torn-oc-deadtime.user.js](https://raw.githubusercontent.com/whitney1977/torn-oc-deadtime/main/torn-oc-deadtime.user.js) and click Install.
+2. Open [torn-oc-deadtime.user.js](https://raw.githubusercontent.com/godzirrarawr/torn-oc-deadtime/main/torn-oc-deadtime.user.js) and click Install.
+
+Works in Tampermonkey, Violentmonkey and [TornPDA](https://www.tornpda.com/) (set injection time to **Start**).
 
 Faction minimums, the default level range and the optional dashboard URL are set at the top of the script.
