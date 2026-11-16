@@ -12,3 +12,9 @@ No API key needed. The script only reads the crime list Torn's own page loads, a
 Works in Tampermonkey, Violentmonkey and [TornPDA](https://www.tornpda.com/) (set injection time to **Start**).
 
 Faction minimums, the default level range and the optional dashboard URL are set at the top of the script.
+
+## Thanks
+
+Beta testers:
+- [Raging_Raven [2482622]](https://www.torn.com/profiles.php?XID=2482622)
+- [SpitefulHorse [3907936]](https://www.torn.com/profiles.php?XID=3907936)

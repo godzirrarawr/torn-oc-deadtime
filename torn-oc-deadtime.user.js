@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.6.0
+// @version      2.8.0
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -10,6 +10,8 @@
 // @connect      143.198.231.254
 // @run-at       document-start
 // ==/UserScript==
+
+// Beta testers: Raging_Raven [2482622], SpitefulHorse [3907936]
 
 /*
  * How it gets data
@@ -49,8 +51,13 @@
  * slot for 15s; you then click Torn's JOIN yourself (the script never clicks
  * it for you).
  *
+ * Roles missing from FACTION_MIN_CPR use DEFAULT_MIN_CPR and show a grey
+ * "≥75?" tag, so a guessed minimum is never mistaken for the faction's.
+ *
  * If the faction dashboard has suggestions for you, its slots are ranked the
  * same way (its own priority breaks ties); otherwise the local data is used.
+ * The dashboard's slot is kept even when another open slot in that crime has
+ * a higher CPR (its ranking weighs roles); the bar notes when that happens.
  *
  * TornPDA
  * ----------------------------------------------------------------------------
@@ -83,6 +90,11 @@
     const roles = MIN_LOOKUP.get(roleKey(crimeName));
     const v = roles && roles.get(roleKey(role));
     return v != null ? v : DEFAULT_MIN_CPR;
+  }
+  // false when the role isn't in FACTION_MIN_CPR and DEFAULT_MIN_CPR is a guess
+  function minKnown(crimeName, role) {
+    const roles = MIN_LOOKUP.get(roleKey(crimeName));
+    return !!(roles && roles.get(roleKey(role)) != null);
   }
   const DASHBOARD_URL = 'http://143.198.231.254:5005/api/recommendations'; // '' to disable
   const DASHBOARD_EVERY_MS = 5 * 60 * 1000; // re-ask the dashboard at most this often
@@ -272,6 +284,7 @@
         open.push({
           position: s.name || s.key || '?',
           min: minCprFor((crime.scenario || {}).name, s.name),
+          minKnown: minKnown((crime.scenario || {}).name, s.name),
           cpr: s.successChance == null ? null : Number(s.successChance),
           needsItem: !!(s.requirement && s.requirement.doesExist === false),
           item: s.requirement ? s.requirement.name : '',
@@ -340,10 +353,11 @@
     #ocdt-guard button{flex:1;padding:3px 6px;border-radius:3px;border:1px solid #777;background:#3a3a3a;color:#eee;
       font:11px Arial,sans-serif;cursor:pointer}
     #ocdt-guard button.ocdt-g-ok{border-color:#e53935;background:#5a1a1a}
-    .ocdt-min{display:inline-block;margin-left:4px;padding:0 3px;border-radius:2px;font:bold 10px Arial,sans-serif;
+    .ocdt-min{display:inline-block;flex:0 0 auto;margin-left:4px;margin-right:4px;padding:0 3px;border-radius:2px;font:bold 10px Arial,sans-serif;
       vertical-align:middle;background:#333;color:#ccc;text-transform:none}
     .ocdt-min.ocdt-min-ok{background:#1f4d1f;color:#9f9}
     .ocdt-min.ocdt-min-low{background:#5a1a1a;color:#f99}
+    .ocdt-min.ocdt-min-guess{background:#333;color:#999;font-style:italic}
     #ocdt-bar .ocdt-info{display:flex;flex-wrap:wrap;gap:6px 14px;flex:1;min-width:0}
     #ocdt-bar .ocdt-ctrl{display:flex;align-items:center;gap:5px;margin-left:auto;white-space:nowrap;color:#a8a8a8 !important}
     #ocdt-bar select{background:#2b2b2b !important;color:#fff !important;border:1px solid #666 !important;border-radius:3px;
@@ -502,14 +516,22 @@
         const label = findSlotElement(s.name, hit.card);
         if (!label) continue;
         const min = minCprFor(r.name, s.name);
+        const known = minKnown(r.name, s.name);
         const cpr = s.successChance == null ? null : Number(s.successChance);
-        const cls = `ocdt-min ${cpr == null ? '' : cpr >= min ? 'ocdt-min-ok' : 'ocdt-min-low'}`;
+        // grey "≥75?" = not on the faction list, using the default as a guess
+        const cls = `ocdt-min ${!known ? 'ocdt-min-guess' : cpr == null ? '' : cpr >= min ? 'ocdt-min-ok' : 'ocdt-min-low'}`;
         const who = s.player ? s.player.name : 'you';
-        const tip = `Faction minimum CPR ${min}% for ${s.name}` + (cpr == null ? '' : ` · ${who}: ${cpr}%`);
-        let tag = label.querySelector(':scope > .ocdt-min');
-        if (!tag) { tag = document.createElement('span'); label.appendChild(tag); }
+        const tip = (known ? `Faction minimum CPR ${min}% for ${s.name}`
+          : `No faction minimum listed for ${s.name} in ${r.name}; using the default ${min}%`) + (cpr == null ? '' : ` · ${who}: ${cpr}%`);
+        const label_ = `≥${min}${known ? '' : '?'}`;
+        // next to the label, not inside it: Torn truncates long role names
+        // ("SABOTEUR #1...") on narrow screens, which would hide the tag
+        const old = label.querySelector(':scope > .ocdt-min');
+        if (old) old.remove();
+        let tag = label.nextElementSibling;
+        if (!tag || !tag.classList.contains('ocdt-min')) { tag = document.createElement('span'); label.after(tag); }
         if (tag.className !== cls) tag.className = cls;
-        if (tag.textContent !== `≥${min}`) tag.textContent = `≥${min}`;
+        if (tag.textContent !== label_) tag.textContent = label_;
         if (tag.title !== tip) tag.title = tip;
       }
     }
@@ -591,7 +613,12 @@
       const t = pick.untouched !== undefined ? tierOf(pick) : (pick.paused ? 1 : pick.deadH <= PAUSE_SOON_H ? 2 : 4);
       const why = t === 1 ? TIER_TEXT[1] : `${TIER_TEXT[t]} · ${fmtH(pick.deadH)} dead`;
       const src = source === 'dashboard' ? `via dashboard${pick.minCpr != null ? `, min ${pick.minCpr}%` : ''}` : 'local pick';
-      parts.push(`<span>${myCrime ? 'Best open' : '★ Join'}: <span class="ocdt-go" data-go="1">${esc(pick.name)} → ${esc(s.position)}${s.cpr != null ? ` (${Math.round(s.cpr)}%)` : ''}</span> · ${why}${s.needsItem ? ` · 🔧 needs ${esc(s.item)}` : ''} <span class="ocdt-muted">(${src})</span></span>`);
+      // dashboard chose a slot other than the highest-CPR one we'd pick: say so
+      const localRow = source === 'dashboard' ? rows.find((r) => String(r.id) === String(pick.id)) : null;
+      const alt = localRow && localRow.bestSlot;
+      const prefers = alt && alt.ok && alt.cpr != null && norm(alt.position) !== norm(s.position) && (s.cpr == null || alt.cpr > s.cpr)
+        ? ` · <span class="ocdt-muted" title="The faction dashboard ranks roles, not just CPR. Its pick is kept.">dashboard prefers ${esc(s.position)} over ${esc(alt.position)} (${Math.round(alt.cpr)}%)</span>` : '';
+      parts.push(`<span>${myCrime ? 'Best open' : '★ Join'}: <span class="ocdt-go" data-go="1">${esc(pick.name)} → ${esc(s.position)}${s.cpr != null ? ` (${Math.round(s.cpr)}%)` : ''}</span> · ${why}${s.needsItem ? ` · 🔧 needs ${esc(s.item)}` : ''}${prefers} <span class="ocdt-muted">(${src})</span></span>`);
     } else {
       parts.push('<span class="ocdt-muted">No open slot fits right now.</span>');
     }
@@ -641,7 +668,7 @@
     const g = document.createElement('div');
     g.id = 'ocdt-guard';
     g.innerHTML = `<b>Hold on: your CPR is too low for this slot.</b><br>
-      Your CPR <b>${Math.round(o.cpr)}%</b> is below the faction minimum <b>${o.min}%</b> for
+      Your CPR <b>${Math.round(o.cpr)}%</b> is below the ${o.minKnown ? 'faction' : 'default'} minimum <b>${o.min}%</b>${o.minKnown ? '' : ' (no faction minimum listed)'} for
       <b>${esc(o.position)}</b> in ${esc(r.name)}.
       <div class="ocdt-g-row"><button type="button" class="ocdt-g-cancel">OK, don't join</button>
       <button type="button" class="ocdt-g-ok">I know, let me join</button></div>`;
