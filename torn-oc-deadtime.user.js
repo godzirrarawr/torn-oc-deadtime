@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.9.0
+// @version      2.10.0
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -47,6 +47,9 @@
  *   2. Crimes that will become paused within 12h (soonest first)
  *   3. Empty crimes (0/X members)
  *   4. The next closest crime to pause (over 12h)
+ * While you're already in a crime there is no pick (you can only be in one);
+ * the bar just shows your crime's status.
+ *
  * Join guard
  * ----------------------------------------------------------------------------
  * Clicking JOIN on a slot where your CPR is below the faction minimum is
@@ -182,8 +185,10 @@
     (document.head || document.documentElement).appendChild(sc);
     sc.remove();
   } catch (e) {}
-  if (!document.documentElement.hasAttribute('data-ocdt-hook')) {
-    // inline script blocked: patch the page window directly
+  // documentElement can still be null this early (TornPDA "Start", some
+  // engines): then nothing was injected and we patch the window directly
+  if (!(document.documentElement && document.documentElement.hasAttribute('data-ocdt-hook'))) {
+    // inline script blocked or no document yet: patch the page window directly
     try {
       const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
       const RX = /sid=organizedCrimesData.*step=crimeList|step=crimeList.*sid=organizedCrimesData/i;
@@ -379,8 +384,8 @@
     .ocdt-min.ocdt-min-ok{background:#1f4d1f;color:#9f9}
     .ocdt-min.ocdt-min-low{background:#5a1a1a;color:#f99}
     .ocdt-min.ocdt-min-guess{background:#333;color:#999;font-style:italic}
-    #ocdt-bar .ocdt-info{display:flex;flex-wrap:wrap;gap:6px 14px;flex:1;min-width:0}
-    #ocdt-bar .ocdt-ctrl{display:flex;align-items:center;gap:5px;margin-left:auto;white-space:nowrap;color:#a8a8a8 !important}
+    #ocdt-bar .ocdt-info{display:flex;flex-wrap:wrap;gap:6px 14px;flex:1 1 240px;min-width:0}
+    #ocdt-bar .ocdt-ctrl{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-left:auto;white-space:nowrap;color:#a8a8a8 !important}
     #ocdt-bar select{background:#2b2b2b !important;color:#fff !important;border:1px solid #666 !important;border-radius:3px;
       padding:1px 3px;font:12px Arial,sans-serif;cursor:pointer}
     .ocdt-cbadge.ocdt-star{background:#d32f2f;color:#fff}
@@ -471,9 +476,12 @@
     const myCrime = all.find((r) => r.mine);
     const rows = all.filter((r) => r.open.length > 0 && !r.mine && (!r.expiresAt || r.expiresAt > now));
     refreshDashboard(false);
-    const rec = dashboardPick(me, new Map(rows.map((r) => [String(r.id), r])));
+    // already in a crime: you can only be in one, so don't suggest another
+    const rec = myCrime ? null : dashboardPick(me, new Map(rows.map((r) => [String(r.id), r])));
     let pick = null, source = 'local';
-    if (rec) {
+    if (myCrime) {
+      // no pick
+    } else if (rec) {
       const row = rows.find((r) => String(r.id) === String(rec.crime_id));
       const slot = row && row.open.find((s) => norm(s.position) === norm(rec.slot_label));
       pick = row
@@ -642,7 +650,7 @@
       const prefers = alt && alt.ok && alt.cpr != null && norm(alt.position) !== norm(s.position) && (s.cpr == null || alt.cpr > s.cpr)
         ? ` · <span class="ocdt-muted" title="The faction dashboard ranks roles, not just CPR. Its pick is kept.">dashboard prefers ${esc(s.position)} over ${esc(alt.position)} (${Math.round(alt.cpr)}%)</span>` : '';
       parts.push(`<span>${myCrime ? 'Best open' : '★ Join'}: <span class="ocdt-go" data-go="1">${esc(pick.name)} → ${esc(s.position)}${s.cpr != null ? ` (${Math.round(s.cpr)}%)` : ''}</span> · ${why}${s.needsItem ? ` · 🔧 needs ${esc(s.item)}` : ''}${prefers} <span class="ocdt-muted">(${src})</span></span>`);
-    } else {
+    } else if (!myCrime) {
       parts.push('<span class="ocdt-muted">No open slot fits right now.</span>');
     }
     const pausedCount = rows.filter((r) => r.paused && levelOk(r.level)).length;
