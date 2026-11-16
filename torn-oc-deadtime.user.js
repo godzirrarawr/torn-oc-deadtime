@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.8.0
+// @version      2.8.1
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -9,6 +9,9 @@
 // @grant        unsafeWindow
 // @connect      143.198.231.254
 // @run-at       document-start
+// @homepageURL  https://github.com/godzirrarawr/torn-oc-deadtime
+// @updateURL    https://raw.githubusercontent.com/godzirrarawr/torn-oc-deadtime/main/torn-oc-deadtime.user.js
+// @downloadURL  https://raw.githubusercontent.com/godzirrarawr/torn-oc-deadtime/main/torn-oc-deadtime.user.js
 // ==/UserScript==
 
 // Beta testers: Raging_Raven [2482622], SpitefulHorse [3907936]
