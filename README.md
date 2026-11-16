@@ -11,7 +11,7 @@ No API key needed. The script only reads the crime list Torn's own page loads, a
 
 Works in Tampermonkey, Violentmonkey and [TornPDA](https://www.tornpda.com/) (set injection time to **Start**).
 
-Faction minimums, the default level range and the optional dashboard URL are set at the top of the script.
+Faction minimum CPRs come from the faction dashboard when it reports them; otherwise from the list at the top of the script, and failing that the default (shown as a grey "≥75?"). The default level range and the dashboard URL are also set at the top of the script.
 
 ## Thanks
 

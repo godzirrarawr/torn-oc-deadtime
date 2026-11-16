@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.8.1
+// @version      2.9.0
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -54,8 +54,12 @@
  * slot for 15s; you then click Torn's JOIN yourself (the script never clicks
  * it for you).
  *
- * Roles missing from FACTION_MIN_CPR use DEFAULT_MIN_CPR and show a grey
- * "≥75?" tag, so a guessed minimum is never mistaken for the faction's.
+ * Where each slot's minimum comes from, first match wins:
+ *   1. the faction dashboard (min_cpr on every open/running slot it reports;
+ *      admins edit these under ROLE WEIGHT > MIN CPR RULES)
+ *   2. FACTION_MIN_CPR below, for crimes the dashboard isn't showing
+ *   3. DEFAULT_MIN_CPR, shown as a grey "≥75?" tag so a guess is never
+ *      mistaken for the faction's rule
  *
  * If the faction dashboard has suggestions for you, its slots are ranked the
  * same way (its own priority breaks ties); otherwise the local data is used.
@@ -86,19 +90,23 @@
     'Bidding War': { 'Driver': 75, 'Robber #1': 70, 'Robber #2': 75, 'Robber #3': 75, 'Bomber #1': 70, 'Bomber #2': 75 },
   };
   const PAUSE_SOON_H = 12;   // "will become paused within 12h"
-  const roleKey = (s) => String(s || '').toLowerCase().replace(/[#\s]/g, '');
+  const roleKey = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[#\s]/g, '');
   const MIN_LOOKUP = new Map(Object.entries(FACTION_MIN_CPR).map(([crime, roles]) =>
     [roleKey(crime), new Map(Object.entries(roles).map(([role, v]) => [roleKey(role), v]))]));
-  function minCprFor(crimeName, role) {
-    const roles = MIN_LOOKUP.get(roleKey(crimeName));
-    const v = roles && roles.get(roleKey(role));
-    return v != null ? v : DEFAULT_MIN_CPR;
+  // dashMins: crime -> role -> min, filled in from the dashboard response
+  let dashMins = null;
+  function minInfo(crimeName, role) {
+    const c = roleKey(crimeName), r = roleKey(role);
+    const d = dashMins && dashMins.get(c) && dashMins.get(c).get(r);
+    if (d != null) return { min: d, src: 'dashboard' };
+    const roles = MIN_LOOKUP.get(c);
+    const v = roles && roles.get(r);
+    if (v != null) return { min: v, src: 'list' };
+    return { min: DEFAULT_MIN_CPR, src: 'guess' };
   }
-  // false when the role isn't in FACTION_MIN_CPR and DEFAULT_MIN_CPR is a guess
-  function minKnown(crimeName, role) {
-    const roles = MIN_LOOKUP.get(roleKey(crimeName));
-    return !!(roles && roles.get(roleKey(role)) != null);
-  }
+  const minCprFor = (crimeName, role) => minInfo(crimeName, role).min;
+  // false when neither the dashboard nor FACTION_MIN_CPR has it (DEFAULT_MIN_CPR is a guess)
+  const minKnown = (crimeName, role) => minInfo(crimeName, role).src !== 'guess';
   const DASHBOARD_URL = 'http://143.198.231.254:5005/api/recommendations'; // '' to disable
   const DASHBOARD_EVERY_MS = 5 * 60 * 1000; // re-ask the dashboard at most this often
 
@@ -236,6 +244,16 @@
         if (d.error) throw new Error(d.error);
         dash.rows = d.available_now_rows || [];
         dash.err = '';
+        // every slot the dashboard reports carries the faction's min for it
+        const mins = new Map();
+        for (const x of [...(d.rows || []), ...(d.filled_slots || []), ...dash.rows]) {
+          const v = x && Number(x.min_cpr);
+          if (!x || !x.crime_name || !(x.slot_label || x.role) || x.min_cpr == null || !Number.isFinite(v)) continue;
+          const c = roleKey(x.crime_name);
+          if (!mins.has(c)) mins.set(c, new Map());
+          mins.get(c).set(roleKey(x.slot_label || x.role), v);
+        }
+        if (mins.size) dashMins = mins;
       } catch (e) { dash.err = 'dashboard: bad response'; }
     }, (e) => { dash.err = (e && e.message) || 'dashboard unreachable'; })
       .then(() => { dash.busy = false; dash.at = Date.now(); scheduleRender(50); });
@@ -524,8 +542,10 @@
         // grey "≥75?" = not on the faction list, using the default as a guess
         const cls = `ocdt-min ${!known ? 'ocdt-min-guess' : cpr == null ? '' : cpr >= min ? 'ocdt-min-ok' : 'ocdt-min-low'}`;
         const who = s.player ? s.player.name : 'you';
-        const tip = (known ? `Faction minimum CPR ${min}% for ${s.name}`
-          : `No faction minimum listed for ${s.name} in ${r.name}; using the default ${min}%`) + (cpr == null ? '' : ` · ${who}: ${cpr}%`);
+        const src = minInfo(r.name, s.name).src;
+        const tip = (src === 'dashboard' ? `Faction minimum CPR ${min}% for ${s.name} (from the dashboard)`
+          : src === 'list' ? `Faction minimum CPR ${min}% for ${s.name} (from the script's list; dashboard not showing this crime)`
+          : `No faction minimum known for ${s.name} in ${r.name}; using the default ${min}%`) + (cpr == null ? '' : ` · ${who}: ${cpr}%`);
         const label_ = `≥${min}${known ? '' : '?'}`;
         // next to the label, not inside it: Torn truncates long role names
         // ("SABOTEUR #1...") on narrow screens, which would hide the tag
@@ -671,7 +691,7 @@
     const g = document.createElement('div');
     g.id = 'ocdt-guard';
     g.innerHTML = `<b>Hold on: your CPR is too low for this slot.</b><br>
-      Your CPR <b>${Math.round(o.cpr)}%</b> is below the ${o.minKnown ? 'faction' : 'default'} minimum <b>${o.min}%</b>${o.minKnown ? '' : ' (no faction minimum listed)'} for
+      Your CPR <b>${Math.round(o.cpr)}%</b> is below the ${o.minKnown ? 'faction' : 'default'} minimum <b>${o.min}%</b>${o.minKnown ? '' : ' (no faction minimum known)'} for
       <b>${esc(o.position)}</b> in ${esc(r.name)}.
       <div class="ocdt-g-row"><button type="button" class="ocdt-g-cancel">OK, don't join</button>
       <button type="button" class="ocdt-g-ok">I know, let me join</button></div>`;
