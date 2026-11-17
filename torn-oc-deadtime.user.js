@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Deadtime
 // @namespace    https://torn.com/
-// @version      2.10.0
+// @version      2.11.0
 // @author       godzirrarawr
 // @description  Marks deadtime on your faction's OC cards and puts a red border on the best crime to join (paused crews first). No API key needed.
 // @match        https://www.torn.com/factions.php*
@@ -14,7 +14,7 @@
 // @downloadURL  https://raw.githubusercontent.com/godzirrarawr/torn-oc-deadtime/main/torn-oc-deadtime.user.js
 // ==/UserScript==
 
-// Beta testers: Raging_Raven [2482622], SpitefulHorse [3907936]
+// Beta testers: Raging_Raven [2482622], SpitefulHorse [3907936], LightNex [3522637]
 
 /*
  * How it gets data
@@ -23,7 +23,8 @@
  * the faction Crimes tab, Torn's page loads its crime list
  * (page.php?sid=organizedCrimesData&step=crimeList). This script reads that
  * response as it passes by, so it only ever sees what you loaded yourself.
- * It never clicks, joins, or acts for you.
+ * It never clicks, joins, or acts for you. While the tab is in the background
+ * it does nothing: no redraws, no dashboard requests.
  *
  * Faction dashboard (optional)
  * ----------------------------------------------------------------------------
@@ -64,8 +65,9 @@
  *   3. DEFAULT_MIN_CPR, shown as a grey "≥75?" tag so a guess is never
  *      mistaken for the faction's rule
  *
- * If the faction dashboard has suggestions for you, its slots are ranked the
- * same way (its own priority breaks ties); otherwise the local data is used.
+ * If the faction dashboard has suggestions for you, the pick is the first
+ * option its "Available Now" panel shows you (same band and priority rules);
+ * otherwise the local data is used.
  * The dashboard's slot is kept even when another open slot in that crime has
  * a higher CPR (its ranking weighs roles); the bar notes when that happens.
  *
@@ -264,23 +266,27 @@
       .then(() => { dash.busy = false; dash.at = Date.now(); scheduleRender(50); });
   }
 
-  // Same rules as the dashboard's "Available Now": free now, not the first
-  // seat of an empty crew outside your band, meets the faction min CPR.
-  // Your rule on top: paused crews first, then the dashboard's priority.
-  function dashboardPick(uid, rowsById) {
+  // Mirrors the dashboard's "Available Now" panel (renderRecAvailableNow in
+  // its dashboard.js) so the script's pick is that panel's first option:
+  //   - free now (available_in_hours <= 0)
+  //   - never the first seat of an empty crew outside your CPR band
+  //   - keep only the options closest to your band (an elite with an
+  //     elite-level crime open isn't offered the L3 one)
+  //   - meets the faction min CPR, then the dashboard's priority_rank, which
+  //     already puts paused / soon-to-pause crews first
+  // Your OC level range applies on top.
+  const BAND_RANK = { developing: 0, core: 1, elite: 2 };
+  const banded = (r) => r.cpr_band != null && r.level_band != null && r.cpr_band in BAND_RANK && r.level_band in BAND_RANK;
+  const bandDistance = (r) => Math.abs(BAND_RANK[r.cpr_band] - BAND_RANK[r.level_band]);
+  function dashboardPick(uid) {
     if (!dash.rows || !uid) return null;
-    const mine = dash.rows.filter((r) => String(r.user_id) === String(uid) && r.available_in_hours <= 0 &&
-      !(r.tier === 3 && r.cpr_band != null && r.level_band != null && r.cpr_band !== r.level_band) &&
-      r.meets_min_cpr && levelOk(Number(r.level)));
-    const tier = (r) => {
-      const local = rowsById.get(String(r.crime_id));
-      if (local) return tierOf(local);
-      if (r.paused_now) return 1;
-      return (r.hours_to_pause ?? 99) <= PAUSE_SOON_H ? 2 : 4;
-    };
-    const hrs = (r) => { const l = rowsById.get(String(r.crime_id)); return l ? l.deadH : (r.paused_now ? 0 : r.hours_to_pause ?? 99); };
-    mine.sort((a, b) => (tier(a) - tier(b)) || (hrs(a) - hrs(b)) || (a.priority_rank - b.priority_rank));
-    return mine[0] || null;
+    let mine = dash.rows.filter((r) => String(r.user_id) === String(uid) && r.available_in_hours <= 0 &&
+      !(r.tier === 3 && banded(r) && r.cpr_band !== r.level_band));
+    const dists = mine.filter((r) => r.meets_min_cpr && banded(r)).map(bandDistance);
+    if (dists.length) { const best = Math.min(...dists); mine = mine.filter((r) => !banded(r) || bandDistance(r) <= best); }
+    const ok = mine.filter((r) => r.meets_min_cpr && levelOk(Number(r.level)))
+      .sort((a, b) => (a.priority_rank ?? 1e9) - (b.priority_rank ?? 1e9));
+    return ok[0] || null;
   }
 
   // ---- who am I -----------------------------------------------------------
@@ -468,7 +474,9 @@
   let lastPickId = null, lastCards = new Map(), lastAll = [];
 
   function render() {
-    if (!/tab=crimes/.test(location.hash) || !document.body) return;
+    // background tab: do nothing at all (no redraw, no dashboard request)
+    // until you come back to it
+    if (document.hidden || !/tab=crimes/.test(location.hash) || !document.body) return;
     ensureStyle();
     const now = Date.now() / 1000;
     const me = myId();
@@ -477,7 +485,7 @@
     const rows = all.filter((r) => r.open.length > 0 && !r.mine && (!r.expiresAt || r.expiresAt > now));
     refreshDashboard(false);
     // already in a crime: you can only be in one, so don't suggest another
-    const rec = myCrime ? null : dashboardPick(me, new Map(rows.map((r) => [String(r.id), r])));
+    const rec = myCrime ? null : dashboardPick(me);
     let pick = null, source = 'local';
     if (myCrime) {
       // no pick
@@ -742,6 +750,7 @@
       scheduleRender(300);
     }).observe(document.body, { childList: true, subtree: true });
     window.addEventListener('hashchange', () => scheduleRender(100));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRender(50); });
     setInterval(() => { if (!document.hidden) render(); }, TICK_MS);
     render();
     setTimeout(render, 3500); // late-injection check (see renderHint)
